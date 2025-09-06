@@ -28,6 +28,7 @@
     "test": "wrangler deploy --dry-run && npx vitest run --config tests/vitest.config.mts"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "chanfana": "2.8.1",
     "hono": "^4.9.6",
     "zod": "3.25.67"

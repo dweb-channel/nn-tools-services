@@ -124,7 +124,7 @@ npm run deploy
 ```javascript
 // 流式响应处理
 async function streamChat(message) {
-  const response = await fetch('/llm/chat', {
+  const response = await fetch('https://localhost:8787/llm/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -150,7 +150,7 @@ async function streamChat(message) {
 
 // 普通响应处理
 async function normalChat(message) {
-  const response = await fetch('/llm/chat', {
+  const response = await fetch('https://localhost:8787/llm/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

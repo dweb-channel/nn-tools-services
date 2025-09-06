@@ -4,10 +4,9 @@ import { z } from "zod";
 import {
   ChatRequest,
   ChatResponse,
-  GeminiRequest,
-  GEMINI_CONFIG,
 } from "./base";
 import { ContentfulStatusCode } from "hono/utils/http-status";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export class GeminiChatEndpoint extends OpenAPIRoute {
   public schema = {
@@ -80,59 +79,43 @@ export class GeminiChatEndpoint extends OpenAPIRoute {
         );
       }
 
-      // 构建Gemini API请求
-      const geminiRequest: z.infer<typeof GeminiRequest> = {
-        contents: [
-          {
-            parts: [{ text: message }],
-          },
-        ],
-        generationConfig: {
-          temperature,
-          maxOutputTokens: max_tokens,
+      // 初始化 Google Generative AI
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+      // 构建请求内容
+      const contents = [
+        {
+          role: "user" as const,
+          parts: [{ text: message }],
         },
+      ];
+
+      // 生成配置
+      const generationConfig = {
+        temperature,
+        maxOutputTokens: max_tokens,
       };
 
-      // 构建API URL
-      const apiUrl = stream
-        ? `${GEMINI_CONFIG.BASE_URL}/models/${GEMINI_CONFIG.STREAM_MODEL}:streamGenerateContent`
-        : `${GEMINI_CONFIG.BASE_URL}/models/${GEMINI_CONFIG.MODEL}:generateContent`;
-
-      // 发送请求到Gemini API
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-goog-api-key": apiKey,
-        },
-        body: JSON.stringify(geminiRequest),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Gemini API错误:", errorText);
-        return c.json(
-          {
-            success: false,
-            error: `Gemini API请求失败: ${response.status}`,
-          },
-          response.status as ContentfulStatusCode
-        );
-      }
+      const conversationId = conversation_id || this.generateConversationId();
 
       if (stream) {
         // 流式响应处理
-        return this.handleStreamResponse(
+        return this.handleStreamResponseWithSDK(
           c,
-          response,
-          conversation_id || this.generateConversationId()
+          model,
+          contents,
+          generationConfig,
+          conversationId
         );
       } else {
         // 普通响应处理
-        return this.handleNormalResponse(
+        return this.handleNormalResponseWithSDK(
           c,
-          response,
-          conversation_id || this.generateConversationId()
+          model,
+          contents,
+          generationConfig,
+          conversationId
         );
       }
     } catch (error) {
@@ -148,128 +131,114 @@ export class GeminiChatEndpoint extends OpenAPIRoute {
   }
 
   /**
-   * 处理流式响应
+   * 使用官方SDK处理流式响应
    */
-  private async handleStreamResponse(
+  private async handleStreamResponseWithSDK(
     c: AppContext,
-    response: Response,
+    model: any,
+    contents: any[],
+    generationConfig: any,
     conversationId: string
   ) {
-    const reader = response.body?.getReader();
-    if (!reader) {
+    try {
+      // 设置流式响应头
+      c.header("Content-Type", "text/plain; charset=utf-8");
+      c.header("Cache-Control", "no-cache");
+      c.header("Connection", "keep-alive");
+      c.header("X-Conversation-ID", conversationId);
+
+      // 创建可读流
+      const stream = new ReadableStream({
+        async start(controller) {
+          try {
+            // 使用官方SDK生成流式内容
+            const result = await model.generateContentStream({
+              contents,
+              generationConfig,
+            });
+
+            // 遍历流式响应
+            for await (const chunk of result.stream) {
+              const text = chunk.text();
+              if (text) {
+                // 将文本内容编码并发送到前端
+                controller.enqueue(new TextEncoder().encode(text));
+              }
+            }
+
+            controller.close();
+          } catch (error) {
+            console.error("SDK流式响应处理出错:", error);
+            controller.error(error);
+          }
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+          "X-Conversation-ID": conversationId,
+        },
+      });
+    } catch (error) {
+      console.error("创建流式响应时出错:", error);
       return c.json(
         {
           success: false,
-          error: "无法读取流式响应",
+          error: "创建流式响应失败",
         },
         500
       );
     }
-
-    // 设置流式响应头
-    c.header("Content-Type", "text/plain; charset=utf-8");
-    c.header("Cache-Control", "no-cache");
-    c.header("Connection", "keep-alive");
-    c.header("X-Conversation-ID", conversationId);
-
-    // 创建可读流
-    const stream = new ReadableStream({
-      async start(controller) {
-        const decoder = new TextDecoder();
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-
-            if (done) {
-              controller.close();
-              break;
-            }
-
-            // 解析Gemini流式响应
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split("\n");
-
-            for (const line of lines) {
-              if (line.trim() && line.startsWith("data: ")) {
-                try {
-                  const jsonStr = line.slice(6); // 移除 'data: ' 前缀
-                  const data = JSON.parse(jsonStr);
-
-                  // 提取文本内容
-                  if (
-                    data.candidates &&
-                    data.candidates[0] &&
-                    data.candidates[0].content
-                  ) {
-                    const content = data.candidates[0].content;
-                    if (
-                      content.parts &&
-                      content.parts[0] &&
-                      content.parts[0].text
-                    ) {
-                      controller.enqueue(
-                        new TextEncoder().encode(content.parts[0].text)
-                      );
-                    }
-                  }
-                } catch (parseError) {
-                  console.error("解析流式数据出错:", parseError);
-                }
-              }
-            }
-          }
-        } catch (error) {
-          console.error("流式响应处理出错:", error);
-          controller.error(error);
-        }
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Conversation-ID": conversationId,
-      },
-    });
   }
 
   /**
-   * 处理普通响应
+   * 使用官方SDK处理普通响应
    */
-  private async handleNormalResponse(
+  private async handleNormalResponseWithSDK(
     c: AppContext,
-    response: Response,
+    model: any,
+    contents: any[],
+    generationConfig: any,
     conversationId: string
   ) {
-    const data = (await response.json()) as any;
+    try {
+      // 使用官方SDK生成内容
+      const result = await model.generateContent({
+        contents,
+        generationConfig,
+      });
 
-    // 提取回复内容
-    let message = "";
-    if (data.candidates && data.candidates[0] && data.candidates[0].content) {
-      const content = data.candidates[0].content;
-      if (content.parts && content.parts[0] && content.parts[0].text) {
-        message = content.parts[0].text;
-      }
+      const response = await result.response;
+      const message = response.text();
+
+      // 提取使用统计（如果有的话）
+      const usage = response.usageMetadata
+        ? {
+            prompt_tokens: response.usageMetadata.promptTokenCount || 0,
+            completion_tokens: response.usageMetadata.candidatesTokenCount || 0,
+            total_tokens: response.usageMetadata.totalTokenCount || 0,
+          }
+        : undefined;
+
+      return c.json({
+        success: true,
+        conversation_id: conversationId,
+        message,
+        usage,
+      });
+    } catch (error) {
+      console.error("SDK普通响应处理出错:", error);
+      return c.json(
+        {
+          success: false,
+          error: "生成内容失败",
+        },
+        500
+      );
     }
-
-    // 提取使用统计（如果有的话）
-    const usage = data.usageMetadata
-      ? {
-          prompt_tokens: data.usageMetadata.promptTokenCount || 0,
-          completion_tokens: data.usageMetadata.candidatesTokenCount || 0,
-          total_tokens: data.usageMetadata.totalTokenCount || 0,
-        }
-      : undefined;
-
-    return c.json({
-      success: true,
-      conversation_id: conversationId,
-      message,
-      usage,
-    });
   }
 
   /**
