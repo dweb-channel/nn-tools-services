@@ -12,5 +12,10 @@
       "database_name": "nn-tools-services-db",
       "database_id": "f8ca7838-5a4e-484b-bb13-421473a09feb"
     }
-  ]
+  ],
+  // 环境变量配置 - 在部署前需要设置
+  // 使用命令: wrangler secret put GEMINI_API_KEY
+  "vars": {
+    // 这里可以放置非敏感的环境变量
+  }
 }
