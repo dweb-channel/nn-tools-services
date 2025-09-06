@@ -1,0 +1,16 @@
+{
+  "compatibility_date": "2025-04-01",
+  "main": "src/index.ts",
+  "name": "nn-tools-services",
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nn-tools-services-db",
+      "database_id": "f8ca7838-5a4e-484b-bb13-421473a09feb"
+    }
+  ]
+}
